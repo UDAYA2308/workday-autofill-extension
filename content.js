@@ -1,26 +1,148 @@
-// Enhanced content script with form load detection - essential logs only
+// Enhanced content script with MANDATORY encrypted password storage
 (() => {
-  console.log('[Workday Autofill] Extension loaded');
+  console.log('[Workday Autofill] Extension loaded - Encryption Required Mode');
 
   let lastFormType = null;
   let hasFilledCurrentForm = false;
+  let crypto = null;
 
-  chrome.storage.local.get(["username", "password", "autoFillEnabled"], ({ username, password, autoFillEnabled }) => {
-    if (!username || !password) {
-      createFloatingCredentialsForm();
-      setupManualAutofillListener();
+  // Initialize crypto - REQUIRED, no fallback
+  async function initializeExtension() {
+    // Wait for PasswordCrypto to be available
+    let attempts = 0;
+    while (!window.PasswordCrypto && attempts < 20) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      attempts++;
+    }
+
+    if (!window.PasswordCrypto) {
+      console.error('[Workday Autofill] CRITICAL: Encryption not available - Extension disabled for security');
+      showEncryptionError();
       return;
     }
 
-    const isAutoFillEnabled = autoFillEnabled !== false;
+    crypto = new window.PasswordCrypto();
 
-    if (isAutoFillEnabled) {
-      waitForFormAndFill(username, password);
-      observeFormChanges(username, password);
+    // Test encryption capability
+    try {
+      const testResult = await crypto.test();
+      if (!testResult) {
+        throw new Error('Encryption test failed');
+      }
+      console.log('[Workday Autofill] Encryption verified and initialized');
+    } catch (error) {
+      console.error('[Workday Autofill] CRITICAL: Encryption test failed - Extension disabled', error);
+      showEncryptionError();
+      return;
     }
 
-    setupManualAutofillListener();
-  });
+    // Load ONLY encrypted credentials
+    chrome.storage.local.get(["username", "encryptedPassword", "autoFillEnabled"], async (result) => {
+      let username = result.username;
+      let password = null;
+
+      // ONLY accept encrypted passwords
+      if (result.encryptedPassword) {
+        try {
+          password = await crypto.decryptPassword(result.encryptedPassword);
+          console.log('[Workday Autofill] Encrypted credentials loaded successfully');
+        } catch (error) {
+          console.error('[Workday Autofill] Failed to decrypt stored password:', error);
+          showDecryptionError();
+          return;
+        }
+      }
+
+      if (!username || !password) {
+        console.log('[Workday Autofill] No valid encrypted credentials found');
+        createFloatingCredentialsForm();
+        setupManualAutofillListener();
+        return;
+      }
+
+      const isAutoFillEnabled = result.autoFillEnabled !== false;
+
+      if (isAutoFillEnabled) {
+        waitForFormAndFill(username, password);
+        observeFormChanges(username, password);
+      }
+
+      setupManualAutofillListener();
+    });
+  }
+
+  // Show encryption error - extension cannot function
+  function showEncryptionError() {
+    const errorDiv = document.createElement('div');
+    errorDiv.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #f44336;
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      z-index: 999999;
+      box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
+      max-width: 300px;
+      border-left: 4px solid #d32f2f;
+    `;
+
+    errorDiv.innerHTML = `
+      <div style="display: flex; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 18px; margin-right: 8px;">⚠️</span>
+        <strong>Workday Autofill Error</strong>
+      </div>
+      <div style="font-size: 13px; line-height: 1.4;">
+        Encryption not available. Extension disabled for security reasons.
+      </div>
+    `;
+
+    document.body.appendChild(errorDiv);
+
+    // Don't auto-remove - user needs to see this error
+  }
+
+  // Show decryption error
+  function showDecryptionError() {
+    const errorDiv = document.createElement('div');
+    errorDiv.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #ff9800;
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      z-index: 999999;
+      box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
+      max-width: 300px;
+      border-left: 4px solid #f57c00;
+    `;
+
+    errorDiv.innerHTML = `
+      <div style="display: flex; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 18px; margin-right: 8px;">🔐</span>
+        <strong>Decryption Failed</strong>
+      </div>
+      <div style="font-size: 13px; line-height: 1.4;">
+        Cannot decrypt stored password. Please re-enter your credentials.
+      </div>
+    `;
+
+    document.body.appendChild(errorDiv);
+
+    setTimeout(() => {
+      errorDiv.remove();
+      createFloatingCredentialsForm();
+    }, 3000);
+  }
 
   // Wait for form to be completely loaded and ready
   function waitForFormAndFill(username, password) {
@@ -86,7 +208,7 @@
       style.opacity !== '0';
   }
 
-  // Fill form immediately when ready 
+  // Fill form immediately when ready
   function fillFormImmediately(username, password, formType) {
     if (formType === 'signup') {
       const createAccountCheckbox = document.querySelector('[data-automation-id="createAccountCheckbox"]');
@@ -122,7 +244,7 @@
     return emailSuccess && passwordSuccess;
   }
 
-  // Instant field filling - no delays
+  // Instant field filling
   function fillFieldInstantly(selector, value) {
     const field = document.querySelector(selector);
     if (!field) return false;
@@ -140,7 +262,7 @@
     return true;
   }
 
-  // Monitor for form changes and new forms
+  // Monitor for form changes
   function observeFormChanges(username, password) {
     const observer = new MutationObserver((mutations) => {
       const hasFormChanges = mutations.some(mutation => {
@@ -228,8 +350,23 @@
   }
 
   function setupManualAutofillListener() {
-    window.addEventListener('manualAutofill', (event) => {
-      const { username, password } = event.detail;
+    window.addEventListener('manualAutofill', async (event) => {
+      const { username, encryptedPassword } = event.detail;
+
+      if (!crypto) {
+        console.error('[Workday Autofill] Encryption not available for manual fill');
+        showEncryptionError();
+        return;
+      }
+
+      let password;
+      try {
+        password = await crypto.decryptPassword(encryptedPassword);
+      } catch (error) {
+        console.error('[Workday Autofill] Failed to decrypt password for manual fill:', error);
+        showDecryptionError();
+        return;
+      }
 
       const floatingForm = document.getElementById('workday-floating-form');
       const backdrop = document.getElementById('workday-floating-backdrop');
@@ -241,7 +378,14 @@
     });
   }
 
+  // SECURE credentials form - ENCRYPTION REQUIRED
   function createFloatingCredentialsForm() {
+    if (!crypto) {
+      console.error('[Workday Autofill] Cannot create form - encryption not available');
+      showEncryptionError();
+      return;
+    }
+
     if (document.getElementById('workday-floating-form')) return;
 
     const backdrop = document.createElement('div');
@@ -280,7 +424,7 @@
       <div style="background: rgba(255, 255, 255, 0.1); padding: 30px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
         <div style="width: 60px; height: 60px; background: rgba(255, 255, 255, 0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 24px;">🔐</div>
         <h2 style="margin: 0; color: white; font-size: 24px; font-weight: 600; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);">Workday Autofill</h2>
-        <p style="margin: 10px 0 0; color: rgba(255, 255, 255, 0.8); font-size: 14px;">Enter your Workday credentials to enable auto-fill</p>
+        <p style="margin: 10px 0 0; color: rgba(255, 255, 255, 0.8); font-size: 14px;">Enter your Workday credentials - Encryption Required</p>
       </div>
       
       <div style="padding: 30px; background: white;">
@@ -305,7 +449,7 @@
                   style="padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s ease; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);"
                   onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 6px 16px rgba(102, 126, 234, 0.4)'"
                   onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.3)'">
-            Save & Auto-fill
+            Encrypt & Save
           </button>
           <button id="workday-cancel" 
                   style="padding: 12px 24px; border: 2px solid #e5e7eb; background: white; color: #6b7280; border-radius: 12px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s ease;"
@@ -317,7 +461,7 @@
         
         <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center;">
           <p style="margin: 0; color: #6b7280; font-size: 12px; line-height: 1.4;">
-            🔒 Your credentials are stored locally and encrypted for security
+            🔒 AES-256 Encryption Required - No Plain Text Storage
           </p>
         </div>
       </div>
@@ -371,7 +515,7 @@
     const saveButton = form.querySelector('#workday-save');
     const cancelButton = form.querySelector('#workday-cancel');
 
-    const handleSave = () => {
+    const handleSave = async () => {
       const username = usernameInput.value.trim();
       const password = passwordInput.value;
 
@@ -386,25 +530,42 @@
         return;
       }
 
-      saveButton.innerHTML = 'Saving...';
+      saveButton.innerHTML = 'Encrypting...';
       saveButton.style.opacity = '0.7';
       saveButton.disabled = true;
 
-      chrome.storage.local.set({ username, password }, () => {
-        console.log('[Workday Autofill] Credentials saved');
+      try {
+        // MANDATORY encryption - fail if not possible
+        const encryptedPassword = await crypto.encryptPassword(password);
 
-        form.style.animation = 'fadeOutScale 0.3s ease';
-        backdrop.style.animation = 'fadeOut 0.3s ease';
+        chrome.storage.local.set({ username, encryptedPassword }, () => {
+          console.log('[Workday Autofill] Credentials encrypted and saved securely');
+
+          form.style.animation = 'fadeOutScale 0.3s ease';
+          backdrop.style.animation = 'fadeOut 0.3s ease';
+
+          setTimeout(() => {
+            form.remove();
+            backdrop.remove();
+
+            window.dispatchEvent(new CustomEvent('manualAutofill', {
+              detail: { username, encryptedPassword }
+            }));
+          }, 300);
+        });
+      } catch (error) {
+        console.error('[Workday Autofill] CRITICAL: Encryption failed - Cannot save credentials', error);
+        saveButton.innerHTML = 'ENCRYPTION FAILED';
+        saveButton.style.background = '#f44336';
+        saveButton.style.opacity = '1';
+        saveButton.disabled = true;
 
         setTimeout(() => {
-          form.remove();
-          backdrop.remove();
-
-          window.dispatchEvent(new CustomEvent('manualAutofill', {
-            detail: { username, password }
-          }));
-        }, 300);
-      });
+          saveButton.innerHTML = 'Retry Encryption';
+          saveButton.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+          saveButton.disabled = false;
+        }, 2000);
+      }
     };
 
     const handleClose = () => {
@@ -432,4 +593,6 @@
       else passwordInput.focus();
     }, 500);
   }
+
+  initializeExtension();
 })();

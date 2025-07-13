@@ -1,4 +1,4 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   const usernameInput = document.getElementById('username');
   const passwordInput = document.getElementById('password');
   const saveButton = document.getElementById('saveCredentials');
@@ -6,20 +6,141 @@ document.addEventListener('DOMContentLoaded', () => {
   const autoFillToggle = document.getElementById('autoFillToggle');
   const status = document.getElementById('status');
 
-  // Auto-save credentials when user types (debounced)
+  // MANDATORY encryption initialization
+  let crypto = null;
+  let attempts = 0;
+
+  while (!window.PasswordCrypto && attempts < 20) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    attempts++;
+  }
+
+  if (!window.PasswordCrypto) {
+    status.textContent = 'CRITICAL ERROR: Encryption not available - Extension disabled';
+    status.className = 'status error';
+    status.style.background = '#f44336';
+
+    // Disable all controls
+    [usernameInput, passwordInput, saveButton, fillButton, autoFillToggle].forEach(el => {
+      el.disabled = true;
+    });
+
+    console.error('[Workday Autofill] CRITICAL: Encryption not available in popup');
+    return;
+  }
+
+  crypto = new window.PasswordCrypto();
+
+  // Test encryption
+  try {
+    const testResult = await crypto.test();
+    if (!testResult) {
+      throw new Error('Encryption test failed');
+    }
+    console.log('[Workday Autofill] Popup encryption verified');
+  } catch (error) {
+    status.textContent = 'CRITICAL ERROR: Encryption test failed - Extension disabled';
+    status.className = 'status error';
+    status.style.background = '#f44336';
+
+    [usernameInput, passwordInput, saveButton, fillButton, autoFillToggle].forEach(el => {
+      el.disabled = true;
+    });
+
+    console.error('[Workday Autofill] CRITICAL: Encryption test failed in popup', error);
+    return;
+  }
+
+  // Auto-save with MANDATORY encryption
   let saveTimeout;
   function autoSave() {
     clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => {
+    saveTimeout = setTimeout(async () => {
       const username = usernameInput.value.trim();
       const password = passwordInput.value.trim();
 
       if (username && password) {
-        chrome.storage.local.set({ username, password });
-        chrome.runtime.sendMessage({ action: 'credentialsSaved' });
-        console.log('[Workday Autofill] Auto-saved credentials');
+        try {
+          const encryptedPassword = await crypto.encryptPassword(password);
+          chrome.storage.local.set({ username, encryptedPassword });
+          chrome.runtime.sendMessage({ action: 'credentialsSaved' });
+          console.log('[Workday Autofill] Auto-saved encrypted credentials');
 
-        // Remove page prompt when credentials are auto-saved
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0]) {
+              chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                func: () => {
+                  const prompt = document.getElementById('workday-floating-form');
+                  if (prompt) prompt.remove();
+                }
+              }).catch(() => { });
+            }
+          });
+        } catch (error) {
+          console.error('[Workday Autofill] CRITICAL: Auto-save encryption failed', error);
+          status.textContent = 'Auto-save failed: Encryption error';
+          status.className = 'status error';
+        }
+      }
+    }, 1500);
+  }
+
+  usernameInput.addEventListener('input', autoSave);
+  passwordInput.addEventListener('input', autoSave);
+
+  // Load ONLY encrypted settings
+  chrome.storage.local.get(['username', 'encryptedPassword', 'autoFillEnabled'], async (result) => {
+    if (result.username) usernameInput.value = result.username;
+
+    // ONLY decrypt encrypted passwords
+    if (result.encryptedPassword) {
+      try {
+        const decryptedPassword = await crypto.decryptPassword(result.encryptedPassword);
+        passwordInput.value = decryptedPassword;
+        status.textContent = `Encrypted credentials loaded. Auto-fill: ${result.autoFillEnabled !== false ? 'ON' : 'OFF'}`;
+        status.className = 'status success';
+      } catch (error) {
+        console.error('[Workday Autofill] Failed to decrypt stored password:', error);
+        passwordInput.placeholder = 'Decryption failed - please re-enter';
+        status.textContent = 'Decryption failed - please re-enter credentials';
+        status.className = 'status error';
+      }
+    } else {
+      status.textContent = 'No encrypted credentials found - please enter below';
+      status.className = 'status error';
+      setTimeout(() => usernameInput.focus(), 100);
+    }
+
+    autoFillToggle.checked = result.autoFillEnabled !== false;
+  });
+
+  // Save with MANDATORY encryption
+  saveButton.addEventListener('click', async () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value.trim();
+
+    if (!username || !password) {
+      status.textContent = 'Please enter both username and password';
+      status.className = 'status error';
+      return;
+    }
+
+    status.textContent = 'Encrypting credentials...';
+    status.className = 'status';
+    saveButton.disabled = true;
+
+    try {
+      const encryptedPassword = await crypto.encryptPassword(password);
+
+      chrome.storage.local.set({ username, encryptedPassword }, () => {
+        status.textContent = 'Credentials encrypted and saved successfully!';
+        status.className = 'status success';
+        saveButton.disabled = false;
+
+        chrome.runtime.sendMessage({ action: 'credentialsSaved' });
+
+        // Remove prompt from current tab
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
           if (tabs[0]) {
             chrome.scripting.executeScript({
@@ -33,65 +154,14 @@ document.addEventListener('DOMContentLoaded', () => {
             });
           }
         });
-      }
-    }, 1500);
-  }
-
-  usernameInput.addEventListener('input', autoSave);
-  passwordInput.addEventListener('input', autoSave);
-
-  // Load existing settings
-  chrome.storage.local.get(['username', 'password', 'autoFillEnabled'], (result) => {
-    if (result.username) usernameInput.value = result.username;
-    if (result.password) passwordInput.value = result.password;
-
-    // Set auto-fill toggle state
-    autoFillToggle.checked = result.autoFillEnabled !== false;
-
-    if (result.username && result.password) {
-      status.textContent = `Credentials loaded. Auto-fill: ${autoFillToggle.checked ? 'ON' : 'OFF'}`;
-      status.className = 'status success';
-    } else {
-      status.textContent = 'Please enter your credentials below';
-      status.className = 'status error';
-      // Focus on username field for immediate input
-      setTimeout(() => usernameInput.focus(), 100);
-    }
-  });
-
-  // Save credentials
-  saveButton.addEventListener('click', () => {
-    const username = usernameInput.value.trim();
-    const password = passwordInput.value.trim();
-
-    if (!username || !password) {
-      status.textContent = 'Please enter both username and password';
-      status.className = 'status error';
-      return;
-    }
-
-    chrome.storage.local.set({ username, password }, () => {
-      status.textContent = 'Credentials saved successfully!';
-      status.className = 'status success';
-
-      // Clear badge notification and remove page prompts
-      chrome.runtime.sendMessage({ action: 'credentialsSaved' });
-
-      // Remove prompt from current tab
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-          chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
-            func: () => {
-              const prompt = document.getElementById('workday-floating-form');
-              if (prompt) prompt.remove();
-            }
-          }).catch(() => {
-            // Silently handle permission errors
-          });
-        }
       });
-    });
+    } catch (error) {
+      console.error('[Workday Autofill] CRITICAL: Encryption failed during save', error);
+      status.textContent = 'ENCRYPTION FAILED - Cannot save credentials';
+      status.className = 'status error';
+      status.style.background = '#f44336';
+      saveButton.disabled = false;
+    }
   });
 
   // Toggle auto-fill
@@ -102,8 +172,8 @@ document.addEventListener('DOMContentLoaded', () => {
     status.className = 'status success';
   });
 
-  // Manual fill trigger
-  fillButton.addEventListener('click', () => {
+  // Manual fill with MANDATORY encryption
+  fillButton.addEventListener('click', async () => {
     const username = usernameInput.value.trim();
     const password = passwordInput.value.trim();
 
@@ -113,34 +183,49 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Save credentials first
-    chrome.storage.local.set({ username, password });
+    status.textContent = 'Encrypting for secure transmission...';
+    status.className = 'status';
+    fillButton.disabled = true;
 
-    // Clear badge notification
-    chrome.runtime.sendMessage({ action: 'credentialsSaved' });
+    try {
+      // MANDATORY encryption for transmission
+      const encryptedPassword = await crypto.encryptPassword(password);
 
-    // Trigger manual autofill
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.scripting.executeScript({
-          target: { tabId: tabs[0].id },
-          func: (user, pass) => {
-            const event = new CustomEvent('manualAutofill', {
-              detail: { username: user, password: pass }
-            });
-            window.dispatchEvent(event);
-          },
-          args: [username, password]
-        }).then(() => {
-          status.textContent = 'Manual fill triggered!';
-          status.className = 'status success';
-        }).catch((error) => {
-          status.textContent = 'Error: Could not access page';
-          status.className = 'status error';
-          console.error('Script injection failed:', error);
-        });
-      }
-    });
+      // Save encrypted credentials first
+      chrome.storage.local.set({ username, encryptedPassword });
+      chrome.runtime.sendMessage({ action: 'credentialsSaved' });
+
+      // Trigger manual autofill with encrypted data
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]) {
+          chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: (user, encPass) => {
+              const event = new CustomEvent('manualAutofill', {
+                detail: { username: user, encryptedPassword: encPass }
+              });
+              window.dispatchEvent(event);
+            },
+            args: [username, encryptedPassword]
+          }).then(() => {
+            status.textContent = 'Manual fill triggered with encrypted data!';
+            status.className = 'status success';
+            fillButton.disabled = false;
+          }).catch((error) => {
+            status.textContent = 'Error: Could not access page';
+            status.className = 'status error';
+            fillButton.disabled = false;
+            console.error('Script injection failed:', error);
+          });
+        }
+      });
+    } catch (error) {
+      console.error('[Workday Autofill] CRITICAL: Manual fill encryption failed', error);
+      status.textContent = 'ENCRYPTION FAILED - Manual fill aborted';
+      status.className = 'status error';
+      status.style.background = '#f44336';
+      fillButton.disabled = false;
+    }
   });
 
   // Enter key support

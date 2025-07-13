@@ -23,6 +23,7 @@
         "*://*.workday.com/*"
       ],
       "js": [
+        "crypto-utils.js",
         "popup.js",
         "content.js"
       ],

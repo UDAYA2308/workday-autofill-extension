@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Workday Autofill",
+  "version": "2.0",
+  "description": "Autofill Workday signup and signin forms with saved credentials.",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.myworkdayjobs.com/*",
+        "*://*.myworkday.com/*",
+        "*://*.workday.com/*"
+      ],
+      "js": [
+        "utils.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "*://*.myworkdayjobs.com/*",
+    "*://*.myworkday.com/*",
+    "*://*.workday.com/*"
+  ]
+}

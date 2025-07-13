@@ -23,7 +23,7 @@
         "*://*.workday.com/*"
       ],
       "js": [
-        "utils.js",
+        "popup.js",
         "content.js"
       ],
       "run_at": "document_idle"

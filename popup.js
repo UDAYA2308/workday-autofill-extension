@@ -13,12 +13,12 @@ document.addEventListener('DOMContentLoaded', () => {
     saveTimeout = setTimeout(() => {
       const username = usernameInput.value.trim();
       const password = passwordInput.value.trim();
-      
+
       if (username && password) {
         chrome.storage.local.set({ username, password });
         chrome.runtime.sendMessage({ action: 'credentialsSaved' });
         console.log('[Workday Autofill] Auto-saved credentials');
-        
+
         // Remove page prompt when credentials are auto-saved
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
           if (tabs[0]) {
@@ -44,10 +44,10 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['username', 'password', 'autoFillEnabled'], (result) => {
     if (result.username) usernameInput.value = result.username;
     if (result.password) passwordInput.value = result.password;
-    
+
     // Set auto-fill toggle state
     autoFillToggle.checked = result.autoFillEnabled !== false;
-    
+
     if (result.username && result.password) {
       status.textContent = `Credentials loaded. Auto-fill: ${autoFillToggle.checked ? 'ON' : 'OFF'}`;
       status.className = 'status success';
@@ -63,20 +63,20 @@ document.addEventListener('DOMContentLoaded', () => {
   saveButton.addEventListener('click', () => {
     const username = usernameInput.value.trim();
     const password = passwordInput.value.trim();
-    
+
     if (!username || !password) {
       status.textContent = 'Please enter both username and password';
       status.className = 'status error';
       return;
     }
-    
+
     chrome.storage.local.set({ username, password }, () => {
       status.textContent = 'Credentials saved successfully!';
       status.className = 'status success';
-      
+
       // Clear badge notification and remove page prompts
       chrome.runtime.sendMessage({ action: 'credentialsSaved' });
-      
+
       // Remove prompt from current tab
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]) {
@@ -106,27 +106,27 @@ document.addEventListener('DOMContentLoaded', () => {
   fillButton.addEventListener('click', () => {
     const username = usernameInput.value.trim();
     const password = passwordInput.value.trim();
-    
+
     if (!username || !password) {
       status.textContent = 'Please enter and save credentials first';
       status.className = 'status error';
       return;
     }
-    
+
     // Save credentials first
     chrome.storage.local.set({ username, password });
-    
+
     // Clear badge notification
     chrome.runtime.sendMessage({ action: 'credentialsSaved' });
-    
+
     // Trigger manual autofill
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         chrome.scripting.executeScript({
           target: { tabId: tabs[0].id },
           func: (user, pass) => {
-            const event = new CustomEvent('manualAutofill', { 
-              detail: { username: user, password: pass } 
+            const event = new CustomEvent('manualAutofill', {
+              detail: { username: user, password: pass }
             });
             window.dispatchEvent(event);
           },
